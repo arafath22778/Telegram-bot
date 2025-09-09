@@ -1,13 +1,16 @@
 // প্রয়োজনীয় লাইব্রেরি ইম্পোর্ট করা হচ্ছে
 const { Telegraf, Markup } = require('telegraf');
+const axios = require('axios');
 require('dotenv').config(); // .env ফাইল থেকে ভ্যারিয়েবল লোড করার জন্য
 
-// কনফিগারেশন ভ্যারিয়েবল
+// --- কনফিগারেশন ভ্যারিয়েবল ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const JOIN_CHANNEL_USERNAME = '@NarutoAllSeasonDownload'; // ব্যবহারকারীকে যে চ্যানেলে জয়েন করতে হবে
-const SOURCE_CHANNEL_USERNAME = '@movieDownload1212';   // যেখান থেকে ফাইল কপি করা হবে
+const SOURCE_CHANNEL_USERNAME = '@movieDownload1212';   // যেখান থেকে ফাইল কপি/ডিটেক্ট করা হবে
+const TARGET_CHANNEL_USERNAME = '@NarutoAllSeasonDownload'; // যেখানে নতুন পোস্ট তৈরি হবে
 
-// Python কোডের মতোই সকল সিনেমার এবং অ্যানিমের Message ID এখানে রাখা হয়েছে
+// আগের মতোই সকল সিনেমার এবং অ্যানিমের Message ID এখানে রাখা হয়েছে
 const LINK_MOVIE_ANIME_IDS = {
     // Anime start from here
     "lookism_season_1":[858,859,860,861,862,863,864,865],
@@ -45,37 +48,24 @@ const LINK_MOVIE_ANIME_IDS = {
     "demon_s2":[323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,338,339,340],
     "demon_s3":[],
     "demon_s4":[371,372,373,374,375,376,377,378],
-    "solo_s1": [15],
-    "solo_s2": [15],
+    "solo_s1": [], // Empty array as per original code
+    "solo_s2": [], // Empty array as per original code
 
     // movie start from here
-    "screech": 123,
-    "jujutsu": 621,
-    "opred": 789,
-    "rock":407,
-    "animal": 897,
-    "dragon":408,
-    "fighter":504,
-    "taare":895,
-    "bor":623,
-    "dangal":867,
-    "sikandar":915,
-    "ace": 916,
-    "lop_nor_tomb": 918,
-    "odela_railway_station": 991
+    "screech": 123, "jujutsu": 621, "opred": 789, "rock":407, "animal": 897,
+    "dragon":408, "fighter":504, "taare":895, "bor":623, "dangal":867,
+    "sikandar":915, "ace": 916, "lop_nor_tomb": 918, "odela_railway_station": 991
 };
 
 // Telegraf বট অবজেক্ট তৈরি করা হচ্ছে
 const bot = new Telegraf(BOT_TOKEN);
 
-// --- Helper Functions ---
+// --- Helper Functions (Manual Menu) ---
 
-// এই ফাংশনটি একটি নির্দিষ্ট সিজনের সকল পর্ব পাঠাবে
 const sendEpisodes = async (ctx, episodeIds, seasonName) => {
     if (!episodeIds || episodeIds.length === 0) {
         return ctx.reply(` দুঃখিত, ${seasonName}-এর কোনো পর্ব এখন পর্যন্ত যোগ করা হয়নি।`);
     }
-
     await ctx.reply(`⬇️ ${seasonName} পাঠানো হচ্ছে... অনুগ্রহ করে অপেক্ষা করুন।`);
     try {
         for (const msg_id of episodeIds) {
@@ -88,7 +78,6 @@ const sendEpisodes = async (ctx, episodeIds, seasonName) => {
     }
 };
 
-// এই ফাংশনটি একটি নির্দিষ্ট মুভি পাঠাবে
 const sendMovie = async (ctx, movieId, movieName) => {
     await ctx.reply(`⬇️ ${movieName} মুভিটি পাঠানো হচ্ছে...`);
     try {
@@ -100,17 +89,40 @@ const sendMovie = async (ctx, movieId, movieName) => {
     }
 }
 
+// --- Helper Functions (Automatic Posting) ---
+
+const searchMovieData = async (movieName) => {
+    try {
+        const url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(movieName)}`;
+        const response = await axios.get(url);
+        if (response.data.results && response.data.results.length > 0) {
+            return response.data.results[0]; // Return the first result
+        }
+        return null;
+    } catch (error) {
+        console.error("TMDB API Error:", error.message);
+        return null;
+    }
+};
+
+const createMovieCaption = (movieData, quality, audio) => {
+    let caption = `▶ Name : 📽️ ${movieData.title}\n`;
+    caption += `▶ Quality : ${quality}\n`;
+    caption += `▶ Audio : ${audio}\n`;
+    caption += `#official\n`;
+    caption += `___________________\n\n`;
+    caption += `Download Now:`;
+    return caption;
+};
 
 // --- Middleware for Force Join ---
-// এই মিডলওয়্যারটি প্রতিটি কমান্ড বা মেসেজের আগে রান করবে এবং চেক করবে ইউজার চ্যানেলে জয়েন করেছে কিনা
 const forceJoinMiddleware = async (ctx, next) => {
     try {
         const chatMember = await ctx.telegram.getChatMember(JOIN_CHANNEL_USERNAME, ctx.from.id);
         const validStatuses = ["member", "administrator", "creator"];
         if (validStatuses.includes(chatMember.status)) {
-            return next(); // ইউজার জয়েন করা থাকলে পরবর্তী ধাপে যাবে
+            return next();
         } else {
-            // জয়েন না করে থাকলে এই মেসেজটি দেখাবে
             await ctx.reply(
                 "❗ বট ব্যবহারের আগে আমাদের চ্যানেলে জয়েন করুন। জয়েন করার পর নিচের ✅ I Have Joined বাটনে চাপুন।",
                 Markup.inlineKeyboard([
@@ -125,76 +137,111 @@ const forceJoinMiddleware = async (ctx, next) => {
     }
 };
 
+// --- Bot Event Listener for Automatic Posting ---
+
+bot.on('channel_post', async (ctx) => {
+    if (ctx.channelPost.chat.username === SOURCE_CHANNEL_USERNAME.substring(1)) {
+        const post = ctx.channelPost;
+        if (post.video || post.document) {
+            const file = post.video || post.document;
+            const messageId = post.message_id;
+
+            let movieName = (file.file_name || "Untitled").split('.').slice(0, -1).join('.').replace(/[\._]/g, ' ');
+            let quality = "720p";
+            if (movieName.match(/1080p/i)) quality = "1080p";
+            if (movieName.match(/480p/i)) quality = "480p";
+            let audio = "Hindi";
+            if (movieName.match(/english|eng/i)) audio = "English";
+            
+            movieName = movieName.replace(/(1080p|720p|480p|hindi|dual audio|bluray|hdrip|webrip)/ig, '').trim();
+            console.log(`স্বয়ংক্রিয়ভাবে নতুন মুভি পাওয়া গেছে: ${movieName}`);
+
+            const movieData = await searchMovieData(movieName);
+
+            if (movieData && movieData.poster_path) {
+                const posterUrl = `https://image.tmdb.org/t/p/w500${movieData.poster_path}`;
+                const caption = createMovieCaption(movieData, quality, audio);
+                const botUsername = (await ctx.telegram.getMe()).username;
+                const deeplink = `https://t.me/${botUsername}?start=file_${messageId}`;
+
+                try {
+                    await ctx.telegram.sendPhoto(
+                        TARGET_CHANNEL_USERNAME,
+                        { url: posterUrl },
+                        {
+                            caption: caption,
+                            ...Markup.inlineKeyboard([
+                                [Markup.button.url('Click Here to Download', deeplink)]
+                            ])
+                        }
+                    );
+                    console.log(`"${movieData.title}" সফলভাবে ${TARGET_CHANNEL_USERNAME} চ্যানেলে পোস্ট করা হয়েছে।`);
+                } catch (e) {
+                    console.error("টার্গেট চ্যানেলে পোস্ট করতে ব্যর্থ:", e.message);
+                }
+            } else {
+                console.log(`"${movieName}" এর জন্য TMDB-তে কোনো তথ্য পাওয়া যায়নি।`);
+            }
+        }
+    }
+});
 
 // --- Bot Commands ---
 
-// /start কমান্ডের জন্য
 bot.start(forceJoinMiddleware, async (ctx) => {
-    // ডিপ-লিঙ্ক চেক করার জন্য (?start=...)
     const payload = ctx.startPayload;
+
+    // নতুন স্বয়ংক্রিয় সিস্টেমের জন্য ডিপ-লিঙ্ক হ্যান্ডেল করা (`?start=file_123`)
+    if (payload && payload.startsWith('file_')) {
+        const messageId = parseInt(payload.split('_')[1], 10);
+        if (!isNaN(messageId)) {
+            await ctx.reply("⬇️ আপনার ফাইলটি পাঠানো হচ্ছে... অনুগ্রহ করে অপেক্ষা করুন।");
+            try {
+                // "Forwarded from" ছাড়া ফাইল পাঠানোর জন্য copyMessage ব্যবহার করা হচ্ছে
+                await ctx.telegram.copyMessage(ctx.chat.id, SOURCE_CHANNEL_USERNAME, messageId);
+                await ctx.reply("✅ ফাইল পাঠানো হয়েছে!");
+            } catch (error) {
+                console.error("ফাইল কপি করার সময় সমস্যা:", error.message);
+                await ctx.reply("❌ ফাইলটি পাঠাতে একটি সমস্যা হয়েছে। এটি হয়তো মুছে ফেলা হয়েছে।");
+            }
+        }
+        return;
+    }
+
+    // পুরোনো ম্যানুয়াল সিস্টেমের জন্য ডিপ-লিঙ্ক হ্যান্ডেল করা (`?start=naruto_s1`)
     if (payload && LINK_MOVIE_ANIME_IDS[payload]) {
         const ids = LINK_MOVIE_ANIME_IDS[payload];
         const name = payload.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-
-        if (Array.isArray(ids)) { // যদি এটি একটি অ্যানিমে সিজন হয়
+        if (Array.isArray(ids)) {
             await sendEpisodes(ctx, ids, name);
-        } else { // যদি এটি একটি মুভি হয়
+        } else {
             await sendMovie(ctx, ids, name);
         }
         return;
     }
     
-    // কোনো ডিপ-লিঙ্ক না থাকলে সাধারণ স্টার্ট মেনু দেখাবে
+    // কোনো ডিপ-লিঙ্ক না থাকলে সাধারণ স্টার্ট মেনু দেখানো
     await ctx.reply("What do you want to download?", Markup.inlineKeyboard([
         [Markup.button.callback("🎬 Movie", "show_movie")],
         [Markup.button.callback("🍥 Anime", "show_anime")]
     ]));
 });
 
-
-// /help কমান্ড
-bot.command('help', (ctx) => {
-    ctx.reply(
-        "ℹ️ Bot Commands:\n" +
-        "/start - বট শুরু করুন\n" +
-        "/help - সাহায্য মেনু\n" +
-        "/about - বট সম্পর্কে\n" +
-        "/premium - প্রিমিয়াম ফিচার সম্পর্কে জানুন"
-    );
-});
-
-// /about কমান্ড
-bot.command('about', (ctx) => {
-    ctx.reply(
-        "🤖 এই বটটি টেলিগ্রাম চ্যানেল থেকে মুভি ও এনিমে ডাউনলোডের জন্য তৈরি।\n" +
-        "✅ উন্নত ফিচার, দ্রুত ডেলিভারি এবং ইউজার-ফ্রেন্ডলি ইন্টারফেস!"
-    );
-});
-
-// /premium কমান্ড
-bot.command('premium', (ctx) => {
-    ctx.reply(
-        "💎 Premium ফিচার:\n" +
-        "- দ্রুত ডাউনলোড\n" +
-        "- Ad-free experience\n" +
-        "- Exclusive এনিমে/মুভি\n" +
-        "যোগাযোগ করুন: @YourSupportBot"
-    );
-});
-
+// পুরোনো কোডের অন্যান্য কমান্ডগুলো অপরিবর্তিত থাকছে
+bot.command('help', (ctx) => { ctx.reply("ℹ️ Bot Commands:\n/start - বট শুরু করুন\n/help - সাহায্য মেনু\n/about - বট সম্পর্কে\n/premium - প্রিমিয়াম ফিচার সম্পর্কে জানুন"); });
+bot.command('about', (ctx) => { ctx.reply("🤖 এই বটটি টেলিগ্রাম চ্যানেল থেকে মুভি ও এনিমে ডাউনলোডের জন্য তৈরি।\n✅ উন্নত ফিচার, দ্রুত ডেলিভারি এবং ইউজার-ফ্রেন্ডলি ইন্টারফেস!"); });
+bot.command('premium', (ctx) => { ctx.reply("💎 Premium ফিচার:\n- দ্রুত ডাউনলোড\n- Ad-free experience\n- Exclusive এনিমে/মুভি\nযোগাযোগ করুন: @YourSupportBot"); });
 
 // --- Callback Query Handlers (Button Clicks) ---
 
-// "check_join" বাটনের জন্য
 bot.action('check_join', async (ctx) => {
     await ctx.answerCbQuery();
     try {
         const chatMember = await ctx.telegram.getChatMember(JOIN_CHANNEL_USERNAME, ctx.from.id);
         const validStatuses = ["member", "administrator", "creator"];
         if (validStatuses.includes(chatMember.status)) {
-            await ctx.deleteMessage(); // আগের 'join' মেসেজটি ডিলিট করে দেবে
+            await ctx.deleteMessage();
             await ctx.reply("✅ চ্যানেল জয়েন নিশ্চিত হয়েছে!");
-            // স্টার্ট মেনু আবার দেখাবে
             await ctx.reply("What do you want to download?", Markup.inlineKeyboard([
                 [Markup.button.callback("🎬 Movie", "show_movie")],
                 [Markup.button.callback("🍥 Anime", "show_anime")]
@@ -208,8 +255,7 @@ bot.action('check_join', async (ctx) => {
     }
 });
 
-
-// প্রধান মেনু বাটন
+// পুরোনো কোডের বাকি অংশ অপরিবর্তিত
 bot.action('show_movie', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText("📽️ একটি মুভি নির্বাচন করুন:", Markup.inlineKeyboard([
@@ -240,46 +286,33 @@ bot.action('main_menu', async (ctx) => {
     ]));
 });
 
-
-// অ্যানিমে সিজন বাটন
 const seasonMenus = {
-    'anime_naruto_shi': { name: 'Naruto Shippuden', seasons: 9 },
-    'anime_naruto': { name: 'Naruto', seasons: 9 },
-    'anime_aot': { name: 'Attack on Titan', seasons: 4 },
-    'anime_demonslayer': { name: 'Demon Slayer', seasons: 4, key: 'demon' },
-    'anime_dbz': { name: 'Dragon Ball', seasons: 5, key: 'db' },
-    'anime_solo': { name: 'Solo Leveling', seasons: 2, key: 'solo' },
-    'anime_lookism': { name: 'Lookism', seasons: 1 },
-    'anime_jujutsu': { name: 'Jujutsu Kaisen', seasons: 2, key: 'juju' },
+    'anime_naruto_shi': { name: 'Naruto Shippuden', seasons: 9 }, 'anime_naruto': { name: 'Naruto', seasons: 9 },
+    'anime_aot': { name: 'Attack on Titan', seasons: 4 }, 'anime_demonslayer': { name: 'Demon Slayer', seasons: 4, key: 'demon' },
+    'anime_dbz': { name: 'Dragon Ball', seasons: 5, key: 'db' }, 'anime_solo': { name: 'Solo Leveling', seasons: 2, key: 'solo' },
+    'anime_lookism': { name: 'Lookism', seasons: 1 }, 'anime_jujutsu': { name: 'Jujutsu Kaisen', seasons: 2, key: 'juju' },
 };
 
-// ডায়নামিকভাবে অ্যানিমের সিজন মেনু তৈরি করার জন্য
 for (const [action, config] of Object.entries(seasonMenus)) {
     bot.action(action, async (ctx) => {
         await ctx.answerCbQuery();
-        const buttons = [];
-        for (let i = 1; i <= config.seasons; i++) {
+        const buttons = Array.from({ length: config.seasons }, (_, i) => {
             const key = config.key || action.split('_')[1];
-            buttons.push(Markup.button.callback(`${config.name} Season ${i}`, `${key}_s${i}`));
-        }
-        
-        // বাটনগুলোকে দুটি কলামে সাজানো হচ্ছে
+            return Markup.button.callback(`${config.name} Season ${i + 1}`, `${key}_s${i + 1}`);
+        });
         const keyboard = [];
         for (let i = 0; i < buttons.length; i += 2) {
             keyboard.push(buttons.slice(i, i + 2));
         }
         keyboard.push([Markup.button.callback("⬅️ Back to Anime List", "show_anime")]);
-
         await ctx.editMessageText(`📺 ${config.name}-এর একটি সিজন নির্বাচন করুন:`, Markup.inlineKeyboard(keyboard));
     });
 }
 
-
-// সকল অ্যানিমের সিজন এবং মুভির ফাইল পাঠানোর জন্য
 bot.action(/^([a-z]+)_s(\d+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    const key = ctx.match[0]; // যেমন: naruto_s1, juju_s2
-    const name = key.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+    const key = ctx.match[0];
+    const name = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     if (LINK_MOVIE_ANIME_IDS[key]) {
         await sendEpisodes(ctx, LINK_MOVIE_ANIME_IDS[key], name);
     } else {
@@ -289,7 +322,7 @@ bot.action(/^([a-z]+)_s(\d+)$/, async (ctx) => {
 
 bot.action(/^movie_([a-z]+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    const key = ctx.match[1]; // যেমন: dragon, rock
+    const key = ctx.match[1];
     const name = key.charAt(0).toUpperCase() + key.slice(1);
     if (LINK_MOVIE_ANIME_IDS[key]) {
         await sendMovie(ctx, LINK_MOVIE_ANIME_IDS[key], name);
@@ -298,11 +331,9 @@ bot.action(/^movie_([a-z]+)$/, async (ctx) => {
     }
 });
 
-
 // বট চালু করা হচ্ছে
 bot.launch();
 console.log('✅ Bot is running...');
 
-// Ctrl+C দিয়ে বন্ধ করার সময় একটি সুন্দর মেসেজ দেখানোর জন্য
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
